@@ -8,10 +8,18 @@
 在调用方 `go.mod` 中加：
 
 ```
-require redfish v0.0.0
-
-replace redfish => ../redfish
+require github.com/ishmaelwanglin/asrock-redfish v0.2.0
 ```
+
+import 路径与包名不同（模块名带 `asrock-`，包名是 `redfish`），建议显式起别名：
+
+```go
+import redfish "github.com/ishmaelwanglin/asrock-redfish"
+```
+
+> 本地联调本库时可在调用方 `go.mod` 临时加
+> `replace github.com/ishmaelwanglin/asrock-redfish => ../../asrock-redfish`，
+> **提交前必须撤掉**——留着它，版本号就成了摆设（编译实际走的是本地工作树）。
 
 ## 快速上手
 
@@ -23,7 +31,7 @@ import (
     "fmt"
     "time"
 
-    "redfish"
+    redfish "github.com/ishmaelwanglin/asrock-redfish"
 )
 
 func main() {
@@ -97,6 +105,38 @@ c.UpdateNetworkProtocol(ctx, "", map[string]redfish.ProtocolConfig{
     "SSH": {Port: intPtr(22), ProtocolEnabled: boolPtr(true)},
 }, []string{"203.107.6.88"})          // NTP 服务器
 ```
+
+### 命名时区（BMC 私有 Web REST，**不是** Redfish）
+
+Redfish 的 `Manager.TimeZoneName` 要 v1.10+，AST2600 实机 `$metadata` 只声明到 `Manager.v1_6_0`，
+PATCH 直接 `400 PropertyUnknown`；而固件里「命名时区」与「手动偏移」是**同一个字符串槽**——
+用 Redfish 写 `DateTimeLocalOffset` 会把 `Asia/Shanghai` 冲成 `GMT+08`，页面下拉变「请选择时区」。
+要让命名时区生效，只能走 BMC 自己的 Web REST：
+
+```go
+w := redfish.NewWebClient("192.168.48.134", "admin", pass, redfish.WithInsecureTLS(true))
+defer w.Logout(ctx)                                 // 每次登录占一个 BMC Web 会话槽，用完立刻还
+
+if ok, err := w.SupportsDateTime(ctx); err != nil {
+    return err                                      // 探测出错
+} else if ok {                                      // SupportsDateTime 免登录、零副作用
+    if err := w.Login(ctx); err != nil {
+        return err                                  // ErrTFARequired / ErrPasswordChangeRequired / *WebError
+    }
+    res, err := w.SetTimeZone(ctx, "Asia/Shanghai", nil) // 第三参 nil = 不碰 utc_minutes
+    if err != nil {
+        return err
+    }
+    if !res.Applied {                               // 固件 200 但没采纳，res.After 是回读真值
+        // 在这里降级（例如回退写偏移），别把"发出去了"当成"生效了"
+    }
+}
+```
+
+三条实现约束：**PUT 是全量替换语义**，所以 `SetTimeZone` 读-改-写按原始字节回送 GET 到的每个字段
+（`timestamp` 经 `float64` 往返会变形），GET 响应缺 `timezone` 键时一个写请求都不发；
+`Applied` 一律由**写后回读**判定；该私有 API 无跨固件兼容性承诺，只按当前 AST2600 固件行为实现。
+另注意：命名时区落地后再用 Redfish PATCH `DateTimeLocalOffset`，会把它冲回 `GMT+08`。
 
 ### 固件升级
 
@@ -247,7 +287,8 @@ go test ./...
 ```
 
 httptest 模拟 BMC 覆盖：会话认证、自动发现、任务轮询、分页、multipart 上传、RAID/订阅/账户请求体、
-iSCSI 引导配置、LLDP 端口、组合服务、CA Bundle 上传、FBO 读写、错误载荷解析等 23 组用例。
+iSCSI 引导配置、LLDP 端口、组合服务、CA Bundle 上传、FBO 读写、错误载荷解析等 28 组用例；
+私有 Web REST 另有 24 组（`webclient_test.go`：CSRF/会话语义、全量回写逐字节、静默吞写、schema 不符零写入）。
 
 ## 手册覆盖对照
 
