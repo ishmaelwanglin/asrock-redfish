@@ -37,3 +37,15 @@ func (c *Client) PatchWithETag(ctx context.Context, path string, body any, etag 
 	_, err := c.do(ctx, apiRequest{method: http.MethodPatch, path: path, body: body, ifMatch: ifMatch}, nil)
 	return err
 }
+
+// PatchWithWildcard 以裸 If-Match: * 发送 PATCH（无版本竞态）。
+//
+// 用途：部分固件（AMI/AST2600 等）对 PATCH 强制要求 If-Match（缺失返回 428），
+// 但其 ETag 是“随秒滚动的时间戳”，先 GET 再 PATCH 的乐观锁两步之间一旦跨秒，
+// 回传旧 ETag 必然 412 Precondition Failed——这类资源上乐观锁形同虚设。
+// 裸 `If-Match: *` 语义为“只要资源存在即写入”，绕开版本竞态；
+// 注意必须是裸 *（不能带引号，`"*"` 会被当作名为 * 的实体标签同样 412）。
+func (c *Client) PatchWithWildcard(ctx context.Context, path string, body any) error {
+	_, err := c.do(ctx, apiRequest{method: http.MethodPatch, path: path, body: body, ifMatch: "*"}, nil)
+	return err
+}

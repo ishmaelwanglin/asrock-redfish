@@ -24,19 +24,23 @@ type Manager struct {
 	Name         string `json:"Name"`
 	Description  string `json:"Description"`
 
-	ManagerType           string      `json:"ManagerType"` // BMC
-	FirmwareVersion       string      `json:"FirmwareVersion"`
-	Model                 string      `json:"Model"`
-	UUID                  string      `json:"UUID"`
-	ServiceEntryPointUUID string      `json:"ServiceEntryPointUUID"`
-	PowerState            string      `json:"PowerState"`
-	DateTime              string      `json:"DateTime"`
-	DateTimeLocalOffset   string      `json:"DateTimeLocalOffset"`
-	AutoDSTEnabled        *bool       `json:"AutoDSTEnabled"`
-	SerialConsole         ConsoleInfo `json:"SerialConsole"`
-	CommandShell          ConsoleInfo `json:"CommandShell"`
-	GraphicalConsole      ConsoleInfo `json:"GraphicalConsole"`
-	Status                Status      `json:"Status"`
+	ManagerType           string `json:"ManagerType"` // BMC
+	FirmwareVersion       string `json:"FirmwareVersion"`
+	Model                 string `json:"Model"`
+	UUID                  string `json:"UUID"`
+	ServiceEntryPointUUID string `json:"ServiceEntryPointUUID"`
+	PowerState            string `json:"PowerState"`
+	DateTime              string `json:"DateTime"`
+	DateTimeLocalOffset   string `json:"DateTimeLocalOffset"`
+	// TimeZoneName DMTF Manager v1.10+ 可写属性：IANA 时区名（如 "Asia/Shanghai"），
+	// 较新的 AST2600 固件支持（BMC Web 显示 "(GMT+08:00 CST) - Asia/Shanghai" 即此值）；
+	// 旧固件不返回该字段，写入被拒时须回退 DateTimeLocalOffset。
+	TimeZoneName     string      `json:"TimeZoneName"`
+	AutoDSTEnabled   *bool       `json:"AutoDSTEnabled"`
+	SerialConsole    ConsoleInfo `json:"SerialConsole"`
+	CommandShell     ConsoleInfo `json:"CommandShell"`
+	GraphicalConsole ConsoleInfo `json:"GraphicalConsole"`
+	Status           Status      `json:"Status"`
 
 	EthernetInterfaces Link `json:"EthernetInterfaces"`
 	SerialInterfaces   Link `json:"SerialInterfaces"`
