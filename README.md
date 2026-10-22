@@ -8,7 +8,7 @@
 在调用方 `go.mod` 中加：
 
 ```
-require github.com/ishmaelwanglin/asrock-redfish v0.2.0
+require github.com/ishmaelwanglin/asrock-redfish v0.3.2
 ```
 
 import 路径与包名不同（模块名带 `asrock-`，包名是 `redfish`），建议显式起别名：
@@ -67,6 +67,47 @@ c.System(ctx, "")                                    // PowerState/SerialNumber/
 
 装机典型链路：`InsertMedia`（虚拟光驱挂 ISO）→ `SetSystemBootOnce(BootCd)` → `SystemReset(On)`；
 裸机 PXE 装机：`SetSystemBootOnce(BootPxe)` → `SystemReset(On)`。
+
+> ⚠️ AST2600 上 `SetSystemBootOnce` 只会"消费"一次性覆盖、**不改变引导顺序**，机器仍按 UEFI BootOrder 走；
+> 要真正"重启进 PXE"必须改写持久 BootOrder ⇒ 用下面的 `SetSystemBootToNetwork`（v0.3.2 新增）。
+
+### 引导顺序治理（v0.3.2 新增，AST2600 持久 BootOrder）
+
+```go
+// 置网络引导项为首位（写持久 BootOrder，回读校验首位；preferMAC 为空则挑第一个网络引导项）
+st, err := c.SetSystemBootToNetwork(ctx, "", "9C6B004A3817")
+st.Written        // 是否真的写入成功（固件 2xx 但不落盘会返回 false + 错误）
+st.EffectiveFirst // 主资源当前生效顺序首位
+st.FutureFirst    // SD 未来状态顺序首位
+st.NeedsRestart   // 是否需要重启才生效
+
+// 置磁盘引导项为首位（装机完成后把机器切回本地盘）
+st2, err := c.SetSystemBootToDisk(ctx, "")
+if !st2.Written { /* 已是首位或写入失败，err 非空 */ }
+
+// 只读观测
+view, _ := c.SystemBootOrderView(ctx, "")   // 主资源生效 / SD 未来状态 / 配置口径（Future 优先）
+mode, _ := c.SystemBootOverrideMode(ctx, "") // SecureBoot 启用→UEFI，否则 Legacy
+path, _ := c.SystemBootSettingsPath(ctx, "") // @Redfish.Settings.SettingsObject（SD 路径）
+
+// 一次性覆盖（主资源优先，失败自动退到 SD 并补齐 Target/Enabled/Mode 三件套）
+c.SetSystemBootOverrideOnce(ctx, "", redfish.BootPxe, "")
+
+// 可复用工具函数（调用方也可直接用）
+redfish.PickNetworkBootOption(opts, "9C6B004A3817") // 挑网络引导项
+redfish.PickDiskBootOption(opts)                     // 挑磁盘引导项
+redfish.ResolveBootEntry(opt, order)                 // BootOrder 元素名 ↔ BootOptions 成员解析
+redfish.PromoteBootEntry(order, entry)               // 把目标项提到首位，其余保持相对顺序
+redfish.DevicePathHasMAC(opt.UefiDevicePath, mac)    // 设备路径是否含该 MAC
+```
+
+写 Boot 的三条固件约束（库内已按此实现，调用方无需重复处理）：
+
+1. **必须写 SD 未来状态路径**：`/redfish/v1/Systems/<id>/SD`（主资源直写返回 400 "moved to FutureState URI"）；
+   库先写 SD，失败再回退主资源。
+2. **必须带三件套**：`BootSourceOverrideTarget` + `BootSourceOverrideEnabled` + `BootSourceOverrideMode`，缺一 400。
+3. **必须回读校验**：`BootOrder` 数组元素是引导项在顺序表里的**名字**（AST2600 形态 `Boot000E`），
+   不是 BootOptions 成员的 `Id`（`000E`）；写错名字固件返回 2xx 但**不落盘** ⇒ 库写完一律回读校验，不一致即报错。
 
 ### 虚拟媒体
 
@@ -279,6 +320,13 @@ c.InventoryDataStatus(ctx, "")            // BIOS 清单处理状态（盘点就
 - **证书**：私钥仅支持未加密 PKCS#1/PKCS#8；PEM 内换行须为 `\n`。
 - **遥测固件限制**：采集周期下限 PT10M、报表上限 5 份、MetricReportDefinitionType 仅 Periodic。
 - **RemoteRoleMapping**：LDAP/AD 角色映射共 5 槽，PATCH 时数组内 `null` 槽位即删除。
+- **AST2600 引导写约束**：写 `Boot` 必须走 SD 未来状态路径 `/redfish/v1/Systems/<id>/SD`
+  （主资源直写返回 400 "moved to FutureState URI"），且必须同时带
+  `BootSourceOverrideTarget` + `BootSourceOverrideEnabled` + `BootSourceOverrideMode`（缺一 400）。
+- **AST2600 乐观锁**：PATCH 强制 `If-Match`（缺失 428 Ami.1.0.PreconditionHeaderMissing），
+  而 ETag 随秒滚动 ⇒ `PatchWithIfMatch` 先用资源 ETag，失败退化为裸 `If-Match: *`。
+- **引导顺序元素名**：`Boot.BootOrder` 的元素是引导项在顺序表里的**名字**（`Boot000E`），
+  不是 BootOptions 成员的 `Id`（`000E`）；写错名字固件返回 2xx 但**不落盘** ⇒ 一律回读校验。
 
 ## 测试
 
@@ -289,6 +337,9 @@ go test ./...
 httptest 模拟 BMC 覆盖：会话认证、自动发现、任务轮询、分页、multipart 上传、RAID/订阅/账户请求体、
 iSCSI 引导配置、LLDP 端口、组合服务、CA Bundle 上传、FBO 读写、错误载荷解析等 28 组用例；
 私有 Web REST 另有 24 组（`webclient_test.go`：CSRF/会话语义、全量回写逐字节、静默吞写、schema 不符零写入）。
+引导顺序治理另有 23 组（`bootorder_test.go`）：以 AST2600 语义 mock（SD 缺三件套 400、
+BootOrder 写入 2xx 却不落盘、主资源与 SD 各自拒写、一次性覆盖只在 SD 可写、SecureBoot 404 表 Legacy）
+覆盖置首/幂等/回退/报错、MAC 精确挑选、回读校验等路径。
 
 ## 手册覆盖对照
 

@@ -38,6 +38,20 @@ func (c *Client) PatchWithETag(ctx context.Context, path string, body any, etag 
 	return err
 }
 
+// PatchWithIfMatch 自动带 If-Match 的 PATCH：先取 ETag 走乐观锁，
+// 失败（412 Precondition Failed，或取 ETag 本身失败）再退化为裸 If-Match: *。
+//
+// 适用场景：AST2600 等固件对 PATCH 强制要求 If-Match（缺失返回 428），
+// 而其 ETag 是「随秒滚动的时间戳」，先 GET 再 PATCH 的两步之间一旦跨秒必然 412。
+func (c *Client) PatchWithIfMatch(ctx context.Context, path string, body any) error {
+	if etag, err := c.ResourceETag(ctx, path); err == nil && etag != "" {
+		if err := c.PatchWithETag(ctx, path, body, etag); err == nil {
+			return nil
+		}
+	}
+	return c.PatchWithWildcard(ctx, path, body)
+}
+
 // PatchWithWildcard 以裸 If-Match: * 发送 PATCH（无版本竞态）。
 //
 // 用途：部分固件（AMI/AST2600 等）对 PATCH 强制要求 If-Match（缺失返回 428），
