@@ -127,6 +127,10 @@ c.SetSystemBootOrderSD(ctx, "", order) // 强制写 SD；无 Settings 资源时�
 > ⚠️ `SetSystemBootOrderSD` 语义是「写未来状态」：改的是下次启动生效的顺序，
 > 与主资源上的「固件当前生效顺序」是两回事（AST2600 实测两者不一致是常态）。
 
+> ⚠️ `preferMAC` 命中同一网卡时，该网卡通常有 **HTTP 与 PXE 两个**引导条目，
+> 此时取集合中靠前者（AST2600 上 HTTP 条目排在 PXE 条目之前 ⇒ 命中 HTTP 条目；
+> HTTP 引导同样能取到 iPXE 脚本，装机链路由 HTTP iPXE 服务承载）。
+
 ### 虚拟媒体
 
 ```go

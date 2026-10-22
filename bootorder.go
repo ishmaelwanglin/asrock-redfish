@@ -563,6 +563,9 @@ func PickDiskBootOption(opts []*BootOption) (*BootOption, error) {
 //
 //  1. preferMAC 精确匹配：BootOptions 成员的 UefiDevicePath 含 MAC(...)，如
 //     "…/MAC(9C6B004A3817,0x1)/IPv4(…)"，据此锁定指定网卡（PXE 引导口）的引导项；
+//     注意同一网卡通常有**两个**条目（HTTP 与 PXE 各一），此时取集合中靠前者
+//     （AST2600 上 HTTP 条目排在 PXE 条目之前 ⇒ 命中 HTTP 条目；
+//     HTTP 引导同样能取到 iPXE 脚本，装机链路由 HTTP iPXE 服务承载）；
 //  2. 回退：优先 DisplayName/Name 含 PXE 的，其次含 HTTP/IPv4 的；
 //  3. 仍挑不出则**如实报错**，不猜：写错引导顺序会让机器下次启动进不去系统。
 func PickNetworkBootOption(opts []*BootOption, preferMAC string) (*BootOption, error) {
