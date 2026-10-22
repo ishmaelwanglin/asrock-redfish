@@ -1,12 +1,55 @@
 package redfish
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
 
 // ---------- 通用模型（手册 3.1 ODATA and Frequently Used Properties） ----------
 
 // Link @odata.id 引用
+//
+// 兼容数组形态：部分厂商固件把集合型链接字段直接返回为链接数组，而不是标准的
+// { "@odata.id": "..." } 对象。实测 AMI AST2600（Redfish v1.15.1）的
+// /redfish/v1/Systems/Self 就是这样：
+//
+//	"PCIeDevices": [{"@odata.id":"/redfish/v1/Chassis/Self/PCIeDevices/00_00_08"}, ...]
+//
+// 按对象硬解会报 `json: cannot unmarshal array into Go struct field
+// ComputerSystem.PCIeDevices of type redfish.Link`，整个 ComputerSystem 解析失败，
+// 连带 PowerState 都读不到（表现为「查电源状态」在 AST2600 上必然失败）。
+// 数组形态解析进 Items，ODataID 留空；对象形态行为与之前完全一致。
 type Link struct {
 	ODataID string `json:"@odata.id"`
+
+	// Items 数组形态下的链接成员（对象形态恒为空）
+	Items []Link `json:"-"`
+}
+
+// UnmarshalJSON 兼容链接字段的对象 / 数组 / null 三种形态。
+func (l *Link) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*l = Link{}
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var items []Link
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return fmt.Errorf("解析链接数组失败: %w", err)
+		}
+		*l = Link{Items: items}
+		return nil
+	}
+	// 别名类型不带本方法，避免递归
+	type linkPlain Link
+	var v linkPlain
+	if err := json.Unmarshal(trimmed, &v); err != nil {
+		return err
+	}
+	*l = Link(v)
+	return nil
 }
 
 // Status 资源状态（State/Health 枚举见手册 Table 4）
