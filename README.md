@@ -8,7 +8,7 @@
 在调用方 `go.mod` 中加：
 
 ```
-require github.com/ishmaelwanglin/asrock-redfish v0.3.2
+require github.com/ishmaelwanglin/asrock-redfish v0.3.3
 ```
 
 import 路径与包名不同（模块名带 `asrock-`，包名是 `redfish`），建议显式起别名：
@@ -108,6 +108,24 @@ redfish.DevicePathHasMAC(opt.UefiDevicePath, mac)    // 设备路径是否含该
 2. **必须带三件套**：`BootSourceOverrideTarget` + `BootSourceOverrideEnabled` + `BootSourceOverrideMode`，缺一 400。
 3. **必须回读校验**：`BootOrder` 数组元素是引导项在顺序表里的**名字**（AST2600 形态 `Boot000E`），
    不是 BootOptions 成员的 `Id`（`000E`）；写错名字固件返回 2xx 但**不落盘** ⇒ 库写完一律回读校验，不一致即报错。
+
+### 显式写入引导顺序（v0.3.3 新增 / 旧接口稳健化）
+
+```go
+// 按调用方给定的顺序原样持久写入（自己编排相对顺序；用于复刻当前顺序做校验等）
+st, err := c.ApplySystemBootOrder(ctx, "", []string{"Boot000E", "Boot0003", "Boot0002"})
+
+// v0.3.3 起 SetSystemBootOrder / SetSystemBootOrderSD 走稳健路径（行为变更）：
+//   - 优先写 Settings(FutureState)，带三件套 + If-Match，失败回退主资源；
+//   - 写完回读校验首位，固件 2xx 却不落盘时报错；
+//   - 旧实现（直接 PATCH 主资源、无 If-Match、无回读）在 AST2600 上会 400/428，
+//     且部分厂商 2xx 却不落盘 ⇒ 「看起来成功、实际没生效」。
+c.SetSystemBootOrder(ctx, "", order)   // 持久顺序（SD 优先，回退主资源）
+c.SetSystemBootOrderSD(ctx, "", order) // 强制写 SD；无 Settings 资源时明确报错
+```
+
+> ⚠️ `SetSystemBootOrderSD` 语义是「写未来状态」：改的是下次启动生效的顺序，
+> 与主资源上的「固件当前生效顺序」是两回事（AST2600 实测两者不一致是常态）。
 
 ### 虚拟媒体
 
@@ -337,9 +355,9 @@ go test ./...
 httptest 模拟 BMC 覆盖：会话认证、自动发现、任务轮询、分页、multipart 上传、RAID/订阅/账户请求体、
 iSCSI 引导配置、LLDP 端口、组合服务、CA Bundle 上传、FBO 读写、错误载荷解析等 28 组用例；
 私有 Web REST 另有 24 组（`webclient_test.go`：CSRF/会话语义、全量回写逐字节、静默吞写、schema 不符零写入）。
-引导顺序治理另有 23 组（`bootorder_test.go`）：以 AST2600 语义 mock（SD 缺三件套 400、
+引导顺序治理另有 33 组（`bootorder_test.go`、`bootorder_apply_test.go`）：以 AST2600 语义 mock（SD 缺三件套 400、
 BootOrder 写入 2xx 却不落盘、主资源与 SD 各自拒写、一次性覆盖只在 SD 可写、SecureBoot 404 表 Legacy）
-覆盖置首/幂等/回退/报错、MAC 精确挑选、回读校验等路径。
+覆盖置首/幂等/回退/报错、MAC 精确挑选、回读校验、显式顺序写入与旧接口稳健化等路径。
 
 ## 手册覆盖对照
 

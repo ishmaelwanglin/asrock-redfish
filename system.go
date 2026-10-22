@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // ---------- ComputerSystem（手册 3.77–3.78 + 3.95 SD + 附录 FixedBootOrder） ----------
@@ -172,14 +173,35 @@ func (c *Client) ClearBootOverride(ctx context.Context, systemID string) error {
 		map[string]any{"Boot": map[string]any{"BootSourceOverrideEnabled": BootOverrideDisabled}}, nil)
 }
 
-// SetSystemBootOrder 设置持久启动顺序（PATCH 系统 Boot.BootOrder，FBO 机型无效）
+// SetSystemBootOrder 设置持久启动顺序（AST2600 稳健路径，FBO 机型无效）
+//
+// v0.3.3 起行为变更（旧的直接 PATCH 主资源实现会「看起来成功但没落盘」）：
+//   - 优先写 Settings(FutureState) 资源 /redfish/v1/Systems/<id>/SD
+//     （AST2600 的 Boot 属性都在那里，直写主资源返回 400
+//     "Support of this Operation for Boot Properties is moved to FutureState URI(...)"），
+//     写 SD 时补齐 BootSourceOverrideTarget/Enabled/Mode 三件套（缺一 400）；
+//   - 带 If-Match 乐观锁（AST2600 缺 If-Match 返回 428 Ami.1.0.PreconditionHeaderMissing）；
+//   - SD 不可用或被拒时回退写主资源；
+//   - 写完回读校验首位元素，固件 2xx 却不落盘时报错（不假装成功）。
+//
+// bootOrder 元素必须是引导项在顺序表里的**名字**（AST2600 形态 "Boot000E"），
+// 不是 BootOptions 成员的 Id（"000E"）；用 ResolveBootEntry 从引导项反查元素名。
 func (c *Client) SetSystemBootOrder(ctx context.Context, systemID string, bootOrder []string) error {
+	if len(bootOrder) == 0 {
+		return fmt.Errorf("BootOrder 不能为空")
+	}
+	for _, e := range bootOrder {
+		if strings.TrimSpace(e) == "" {
+			return fmt.Errorf("BootOrder 含空元素: %v", bootOrder)
+		}
+	}
 	id, err := c.ResolveSystemID(ctx, systemID)
 	if err != nil {
 		return err
 	}
-	return c.Patch(ctx, "/redfish/v1/Systems/"+id,
-		map[string]any{"Boot": map[string]any{"BootOrder": bootOrder}}, nil)
+	sysPath := "/redfish/v1/Systems/" + id
+	sdPath := c.bootSettingsPath(ctx, sysPath)
+	return c.writeBootOrder(ctx, sysPath, sdPath, "", bootOrder, bootOrder[0])
 }
 
 // SetSystemAssetTag 设置资产标签（204）
@@ -248,13 +270,42 @@ func (c *Client) SystemSD(ctx context.Context, systemID string) (*ComputerSystem
 }
 
 // SetSystemBootOrderSD 通过 SD 资源设置启动顺序（下次启动生效）
+//
+// v0.3.3 起走稳健路径：带 If-Match 乐观锁、补齐引导三件套
+// （BootSourceOverrideTarget/Enabled/Mode，AST2600 缺一 400）、写完回读校验首位元素；
+// SD 资源不存在时明确报错（不静默改写主资源，语义不同）。
 func (c *Client) SetSystemBootOrderSD(ctx context.Context, systemID string, bootOrder []string) error {
+	if len(bootOrder) == 0 {
+		return fmt.Errorf("BootOrder 不能为空")
+	}
+	for _, e := range bootOrder {
+		if strings.TrimSpace(e) == "" {
+			return fmt.Errorf("BootOrder 含空元素: %v", bootOrder)
+		}
+	}
 	id, err := c.ResolveSystemID(ctx, systemID)
 	if err != nil {
 		return err
 	}
-	return c.Patch(ctx, "/redfish/v1/Systems/"+id+"/SD",
-		map[string]any{"Boot": map[string]any{"BootOrder": bootOrder}}, nil)
+	sysPath := "/redfish/v1/Systems/" + id
+	sdPath := c.bootSettingsPath(ctx, sysPath)
+	if sdPath == "" {
+		return fmt.Errorf("该固件未暴露 Settings(FutureState) 资源，无法写 SD 引导顺序")
+	}
+	mode, err := c.bootOverrideMode(ctx, sysPath)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"Boot": map[string]any{
+		"BootOrder":                 bootOrder,
+		"BootSourceOverrideTarget":  BootNone,
+		"BootSourceOverrideEnabled": BootOverrideDisabled,
+		"BootSourceOverrideMode":    mode,
+	}}
+	if err := c.PatchWithIfMatch(ctx, sdPath, payload); err != nil {
+		return fmt.Errorf("写 SD 引导顺序失败: %w", err)
+	}
+	return c.verifyBootOrderAt(ctx, sdPath, bootOrder[0])
 }
 
 // ---------- 组合系统（手册 3.77 POST，SystemType=Composed） ----------

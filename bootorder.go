@@ -248,6 +248,62 @@ func (c *Client) SetSystemBootToDisk(ctx context.Context, systemID string) (Boot
 	return st, nil
 }
 
+// ApplySystemBootOrder 按调用方给定的顺序持久改写引导顺序（AST2600 稳健路径）。
+//
+// 与 SetSystemBootToNetwork / SetSystemBootToDisk 的差别：后两者由本库按语义
+// （网络项 / 磁盘项置首）计算新顺序，本函数**原样**写入给定顺序。
+// 适用场景：调用方已知道目标顺序、需要精确复刻（例如把当前生效顺序原样落盘做校验），
+// 或需要自行编排引导项相对顺序。
+//
+// 写路径与校验口径同 SetSystemBootToDisk：
+//   - 优先写 Settings(FutureState)（AST2600 的 Boot 属性在那里，且强制要求三件套 + If-Match），
+//     失败回退主资源；写完回读校验首位元素，固件 2xx 却不落盘时报错；
+//   - 只写了未来状态（SD）时固件要等下次启动才消费 ⇒ NeedsRestart=true。
+func (c *Client) ApplySystemBootOrder(ctx context.Context, systemID string, order []string) (BootOrderState, error) {
+	var st BootOrderState
+	if len(order) == 0 {
+		return st, fmt.Errorf("引导顺序不能为空")
+	}
+	for _, e := range order {
+		if strings.TrimSpace(e) == "" {
+			return st, fmt.Errorf("引导顺序含空元素: %v", order)
+		}
+	}
+	id, err := c.ResolveSystemID(ctx, systemID)
+	if err != nil {
+		return st, err
+	}
+	sysPath := "/redfish/v1/Systems/" + id
+	sdPath := c.bootSettingsPath(ctx, sysPath)
+
+	effective := c.bootOrderAt(ctx, sysPath)
+	if len(effective) > 0 {
+		st.EffectiveFirst = effective[0]
+	}
+	var future []string
+	if sdPath != "" {
+		future = c.bootOrderAt(ctx, sdPath)
+		if len(future) > 0 {
+			st.FutureFirst = future[0]
+		}
+	}
+	configured := future
+	if len(configured) == 0 {
+		configured = effective
+	}
+	if len(configured) > 0 {
+		st.ConfiguredFirst = configured[0]
+	}
+	st.Entry = order[0]
+
+	if err := c.writeBootOrder(ctx, sysPath, sdPath, "", order, order[0]); err != nil {
+		return st, err
+	}
+	st.Written = true
+	st.NeedsRestart = true
+	return st, nil
+}
+
 // SetSystemBootOverrideOnce 设置一次性引导覆盖（下次启动生效后自动失效）。
 //
 // 先按历史 payload（不带 BootSourceOverrideMode，部分厂商拒收该字段）写主资源；

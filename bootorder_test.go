@@ -33,6 +33,7 @@ type fakeBootBMC struct {
 	silentDropBootOrder bool     // true = 固件 2xx 却不落盘（顺序原样不动，回读必须报错）
 	legacy              bool     // true = SecureBoot 404（Legacy 固件）
 	netOptMAC           string   // 给 PXE 引导项的设备路径带上 MAC（真机 UefiDevicePath 含 MAC(...)）
+	noSettings          bool     // true = 主资源不暴露 @Redfish.Settings 注解（无 SD 资源）
 
 	sdBoot        map[string]any
 	patches       []string
@@ -53,13 +54,16 @@ func (f *fakeBootBMC) handler() http.Handler {
 		switch r.Method {
 		case http.MethodGet:
 			w.Header().Set("ETag", `"stable"`)
-			respondJSON(w, 200, map[string]any{
-				"Id": "Self",
-				"@Redfish.Settings": map[string]any{
-					"SettingsObject": map[string]any{"@odata.id": "/redfish/v1/Systems/Self/SD"},
-				},
+			body := map[string]any{
+				"Id":   "Self",
 				"Boot": map[string]any{"BootOrder": f.bootOrder},
-			})
+			}
+			if !f.noSettings {
+				body["@Redfish.Settings"] = map[string]any{
+					"SettingsObject": map[string]any{"@odata.id": "/redfish/v1/Systems/Self/SD"},
+				}
+			}
+			respondJSON(w, 200, body)
 		case http.MethodPatch:
 			f.applyPatch(w, r, false)
 		default:
